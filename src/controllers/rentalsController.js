@@ -1,5 +1,6 @@
 import connection from '../dbStrategy/postgres.js';
 import joi from 'joi';
+import dayjs from 'dayjs';
 
 /*
 {
@@ -16,11 +17,11 @@ import joi from 'joi';
 const customerSchema = joi.object({
     customerId: joi.number().required(),
     gameId: joi.number().required(),
-    rentDate: joi.string().required().regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/),
-    daysRented: joi.number().required(),
-    returnDate: joi.string().required().regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/),
-    originalPrice: joi.number().required().min(0),
-    delayFee: joi.number().required()
+    daysRented: joi.number().required()
+    //rentDate: joi.string().required().regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/),
+    //returnDate: joi.string().required().regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/),
+    //originalPrice: joi.number().required().min(0),
+    //delayFee: joi.number().required()
   })
 
   export async function getRentals(req, res){
@@ -76,4 +77,107 @@ const customerSchema = joi.object({
         console.log(error);
         res.sendStatus(500);
     }
+  }
+
+  export async function insertRental(req, res){
+    try{
+        const newRental = req.body;
+        const { error } = customerSchema.validate(newRental);
+        if (error) return res.sendStatus(400);
+        
+        const { customerId, gameId, daysRented } = newRental;
+        const rentDate = dayjs().format("YYYY-MM-DD");
+
+        //Verifica se o cliente existe
+        const customer = await connection.query(`SELECT * FROM customers where id = $1`, [customerId]);
+        if(customer.rowCount === 0){
+          return res.status(400).send("Cliente não existe!");
+        }
+
+        //Verifica se o game existe
+        const game = await connection.query(`SELECT * FROM games where id = $1`, [gameId]);
+        if(game.rowCount === 0){
+          return res.status(400).send("Jogo não existe!");
+        }
+        
+        //Calcula o preço por dia
+        //const gamePricePerDay = await (await connection.query(`SELECT "pricePerDay" FROM games where "id" = $1`, [gameId])).rows[0].pricePerDay;
+        const gamePricePerDay = game.rows[0].pricePerDay;
+        const originalPrice = Number(gamePricePerDay) * Number(daysRented);
+        
+        const returnDate = '';
+        const delayFee = 'null';
+
+        const totalGameRented = await (await connection.query(`SELECT count(id) as "totalGameRented" FROM rentals where id = $1`, [gameId])).rows[0].totalGameRented;
+        const gameStockTotal = game.rows[0].stockTotal;
+        if(totalGameRented >= gameStockTotal){
+            return res.status(400).send("Jogo não disponível no estoque");
+        }
+
+        await connection.query(
+            `INSERT INTO rentals ("customerId", "gameId", "rentDate", "daysRented", "returnDate", "originalPrice", "delayFee") values ($1, $2, $3, $4, null, $5, null)`, [customerId, gameId, rentDate, daysRented,  originalPrice]
+          )
+    
+        res.sendStatus(200);
+        
+    }catch(error){
+        console.log(error);
+        res.sendStatus(500);
+    }
+  }
+
+  export async function finishRental(req, res){
+    try{
+      const { id } = req.params;
+      const { rows: rental } = await connection.query('select * from rentals join games on rentals."gameId" = games.id WHERE rentals.id = $1', [id]);
+      const returnDate = dayjs().format("YYYY-MM-DD");
+      let delayFee = 0;
+
+      if(!rental[0]){
+        return res.sendStatus(404);
+      }
+
+      if(rental[0].returnDate !== null){
+        return res.sendStatus(400);
+      }
+
+      const rentalDate = dayjs(rental[0].rentDate).format('YYYY-MM-DD');
+      const daysRented = rental[0].daysRented;
+      const limitDate = dayjs(rentalDate).add(daysRented, 'day').format('YYYY-MM-DD');
+      
+    
+      const diffDates = (dayjs(limitDate).unix() - dayjs(returnDate).unix()) / 60 / 60 / 24;
+      const pricePerDay = rental[0].pricePerDay;
+      if(diffDates < 0){
+        delayFee = (pricePerDay * diffDates) * -1;
+      }
+
+      await connection.query(
+        `UPDATE rentals SET "returnDate"=$1, "delayFee"=$2 where id = $3`, [returnDate, delayFee, id]
+      ) 
+
+      res.sendStatus(200);
+
+    }catch(error){
+      console.log(error);
+      res.sendStatus(500);
+    }
+  }
+
+  export async function deleteRental(req, res){
+    const { id } = req.params;
+    const { rows: rental } = await connection.query('select * from rentals WHERE rentals.id = $1', [id]);
+    if(!rental[0]){
+      return res.sendStatus(404);
+    }
+
+    if(rental[0].returnDate === null){
+      return res.sendStatus(400);
+    }
+
+    await connection.query(
+      `delete from rentals where id = $1`, [id]
+    );
+
+    res.sendStatus(200);
   }

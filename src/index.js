@@ -22,4 +22,4 @@ app.use(customersRouter);
 app.use(rentalsRouter);
 
 const PORT = process.env.PORT;
-app.listen(PORT, () => console.log('Servidor rodou deboas'));
+app.listen(PORT, () => console.log('Servidor rodou deboas na porta ' + PORT));
